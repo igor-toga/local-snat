@@ -166,7 +166,8 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
 
         agent_mode = self._get_agent_mode(agent)
 
-        if agent_mode == constants.L3_AGENT_MODE_DVR:
+        if (agent_mode == constants.L3_AGENT_MODE_DVR or 
+            agent_mode == constants.L3_AGENT_MODE_DVR_LOCAL_SNAT):
             raise l3agentscheduler.DVRL3CannotAssignToDvrAgent()
 
         if (agent_mode == constants.L3_AGENT_MODE_LEGACY and
@@ -249,7 +250,8 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         """
         agent = self._get_agent(context, agent_id)
         agent_mode = self._get_agent_mode(agent)
-        if agent_mode == constants.L3_AGENT_MODE_DVR:
+        if (agent_mode == constants.L3_AGENT_MODE_DVR or
+            agent_mode == constants.L3_AGENT_MODE_DVR_LOCAL_SNAT):
             raise l3agentscheduler.DVRL3CannotRemoveFromDvrAgent()
 
         self._unbind_router(context, router_id, agent_id)
@@ -298,6 +300,10 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         """
         cur_agents = self.list_l3_agents_hosting_router(
             context, router_id)['agents']
+        print "--------------------------------------"
+        print "Current agents:" % cur_agents
+        print "New agents:" % candidates
+        print "--------------------------------------"
         with context.session.begin(subtransactions=True):
             cur_agents_ids = [agent['id'] for agent in cur_agents]
             self._unschedule_router(context, router_id, cur_agents_ids)
@@ -312,6 +318,28 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         self._notify_agents_router_rescheduled(context, router_id,
                                                cur_agents, new_agents)
 
+    
+    def notify_agent_update(self, context, router_id, host):
+        l3_notifier = self.agent_notifiers.get(constants.AGENT_TYPE_L3)
+        if not l3_notifier:
+            return
+        
+        for attempt in range(AGENT_NOTIFY_MAX_ATTEMPTS):
+                try:
+                    l3_notifier.routers_updated_on_host(
+                        context, [router_id], host)
+                    break
+                except oslo_messaging.MessagingException:
+                    LOG.warning(_LW('Failed to notify L3 agent on host '
+                                    '%(host)s about added router. Attempt '
+                                    '%(attempt)d out of %(max_attempts)d'),
+                                {'host': host, 'attempt': attempt + 1,
+                                 'max_attempts': AGENT_NOTIFY_MAX_ATTEMPTS})
+        else:
+            raise l3agentscheduler.RouterReschedulingFailed(
+                router_id=router_id)
+
+    
     def _notify_agents_router_rescheduled(self, context, router_id,
                                           old_agents, new_agents):
         l3_notifier = self.agent_notifiers.get(constants.AGENT_TYPE_L3)
@@ -364,15 +392,31 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
                                                      active=True)
         else:
             routers = self.get_sync_data(context, router_ids=router_ids,
-                                         active=True)
+                                         active=True, host=host)
         return self.filter_allocating_and_missing_routers(context, routers)
 
     def list_router_ids_on_host(self, context, host, router_ids=None):
         agent = self._get_agent_by_type_and_host(
             context, constants.AGENT_TYPE_L3, host)
+        
+        LOG.warning("-------------------_> list_router_id_on_host is called");
         if not agentschedulers_db.services_available(agent.admin_state_up):
             return []
-        return self._get_router_ids_for_agent(context, agent, router_ids)
+        
+        agent_mode_key = '\"agent_mode\": \"'
+        
+        is_local_gw_mode = agent.configurations.find('%s%s\"' %
+                     (agent_mode_key, constants.L3_AGENT_MODE_DVR_LOCAL_SNAT))
+        
+        if is_local_gw_mode !=-1:
+            scheduled_router_ids = self._get_router_ids_for_agent_with_local_snat(
+                context, agent, router_ids)
+            LOG.debug("-- LOCAL GATEWAY update: router_ids %s " , scheduled_router_ids)
+        else:
+            scheduled_router_ids = self._get_router_ids_for_agent(context, agent, router_ids)
+            
+        LOG.warning("-------------------_> list_router_id_on_host: %s", scheduled_router_ids);
+        return scheduled_router_ids
 
     def _get_router_ids_for_agent(self, context, agent, router_ids):
         """Get IDs of routers that the agent should host
@@ -380,6 +424,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         Overridden for DVR to handle agents in 'dvr' mode which have
         no explicit bindings with routers
         """
+        LOG.debug("----------------- > CHECK RouterL3Agent binding (regular case)")
         query = context.session.query(RouterL3AgentBinding.router_id)
         query = query.filter(
             RouterL3AgentBinding.l3_agent_id == agent.id)
@@ -390,6 +435,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
 
         return [item[0] for item in query]
 
+                    
     def list_active_sync_routers_on_active_l3_agent(
             self, context, host, router_ids):
         agent = self._get_agent_by_type_and_host(
@@ -398,8 +444,20 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
             LOG.debug("Agent has its services disabled. Returning "
                       "no active routers. Agent: %s", agent)
             return []
-        scheduled_router_ids = self._get_router_ids_for_agent(
-            context, agent, router_ids)
+        
+        LOG.debug("-- Agent configurations %s " % agent.configurations)
+        agent_mode_key = '\"agent_mode\": \"'
+        
+        is_local_gw_mode = agent.configurations.find('%s%s\"' %
+                     (agent_mode_key, constants.L3_AGENT_MODE_DVR_LOCAL_SNAT))
+        
+        if is_local_gw_mode !=-1:
+            scheduled_router_ids = self._get_router_ids_for_agent_with_local_snat(
+                context, agent, router_ids)
+            LOG.debug("-- LOCAL GATEWAY update: router_ids %s " , scheduled_router_ids)
+        else:
+            scheduled_router_ids = self._get_router_ids_for_agent(
+                context, agent, router_ids)
         diff = set(router_ids or []) - set(scheduled_router_ids or [])
         if diff:
             LOG.debug("Agent requested router IDs not scheduled to it. "
@@ -408,6 +466,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
                       {'sched': scheduled_router_ids, 'diff': diff,
                        'agent': agent})
         if scheduled_router_ids:
+            LOG.debug("---------------> Scheduled router_ids: ",  router_ids)
             return self._get_active_l3_agent_routers_sync_data(
                 context, host, agent, scheduled_router_ids)
         return []
@@ -496,6 +555,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
             agent_mode = agent_conf.get(constants.L3_AGENT_MODE,
                                         constants.L3_AGENT_MODE_LEGACY)
             if (agent_mode == constants.L3_AGENT_MODE_DVR or
+                agent_mode == constants.L3_AGENT_MODE_DVR_LOCAL_SNAT or
                     (agent_mode == constants.L3_AGENT_MODE_LEGACY and
                      is_router_distributed)):
                 continue
@@ -516,6 +576,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
                  ex_net_id != gateway_external_network_id)):
                 continue
 
+            LOG.warning("--------> appended candidate with agent mode: %s, host: %s", agent_mode, l3_agent.host)
             candidates.append(l3_agent)
         return candidates
 

@@ -32,6 +32,7 @@ from neutron.db import allowedaddresspairs_db as addr_pair_db
 from neutron.db import l3_agentschedulers_db as l3_sched_db
 from neutron.db import l3_attrs_db
 from neutron.db import l3_db
+from neutron.db import agents_db
 from neutron.db import models_v2
 from neutron.extensions import l3
 from neutron.extensions import portbindings
@@ -39,6 +40,7 @@ from neutron.ipam import utils as ipam_utils
 from neutron import manager
 from neutron.plugins.common import constants
 from neutron.plugins.common import utils as p_utils
+from neutron.common import utils
 
 
 LOG = logging.getLogger(__name__)
@@ -59,13 +61,141 @@ class L3_NAT_with_dvr_db_mixin(l3_db.L3_NAT_db_mixin,
         l3_db.L3_NAT_db_mixin.router_device_owners +
         (l3_const.DEVICE_OWNER_DVR_INTERFACE,
          l3_const.DEVICE_OWNER_ROUTER_SNAT,
-         l3_const.DEVICE_OWNER_AGENT_GW))
+         l3_const.DEVICE_OWNER_AGENT_GW,
+         l3_const.DEVICE_OWNER_ROUTER_LOCAL_GW
+         ))
 
     extra_attributes = (
         l3_attrs_db.ExtraAttributesMixin.extra_attributes + [{
             'name': "distributed",
             'default': cfg.CONF.router_distributed
         }])
+    
+    def add_gateway_interface1(self, context, router_id, router):
+        pass
+        
+    def add_gateway_interface(self, context, router_id, router):
+        
+        r = router['router']
+        gw_info = r.pop(l3.EXTERNAL_GW_INFO, attributes.ATTR_NOT_SPECIFIED)
+        
+        candidate = None
+        router_db = self._get_router(context, router_id)
+        
+        # First check if main gateway port is set
+        if (router_db.gw_port is None):
+            msg = (_("Can't get alternative gateway port while main gateway port is not set"))
+            raise n_exc.BadRequest(resource='router', msg=msg)
+            
+        # if gw_info attributes not set do nothing
+        if gw_info != attributes.ATTR_NOT_SPECIFIED:
+            agent_id = gw_info.get('agent_id')
+            if agent_id:
+                candidate = self._check_router_on_agent_supports_alt_gateway(
+                    context, router_id, agent_id, gw_info)
+                
+                if candidate:
+                    LOG.debug( "Adding gateway port  on agent %s" % agent_id)
+                    ext_ips = gw_info.get('external_fixed_ips') if gw_info else []
+                    network_id = self._validate_gw_info(context, None, gw_info, ext_ips)
+                
+                    self._create_gw_port(context, router_id, router_db, network_id,
+                                         ext_ips, agent_id)
+            
+                    router_db = self._update_router_db(context, router_id, r)
+        
+                    l3_plugin = manager.NeutronManager.get_service_plugins().get(
+                        constants.L3_ROUTER_NAT)
+                    
+                    LOG.debug( "Gateway port on host %s is added to database, now notify agent about it")
+                    l3_plugin.notify_agent_update(context, router_id, candidate.host)
+        
+            
+        res = self._make_router_dict(router_db)
+        self._add_agent_gw_info(context, res, router_db)
+        #return self._make_router_dict(router_db)
+        return res
+        
+        
+    
+    def _get_gateway_port_for_agent(self, context, router_id, host):
+        
+        ports = context.session.query(
+                l3_db.RouterPort.port_id).filter(
+                    l3_db.RouterPort.router_id == router_id,
+                    l3_db.RouterPort.host == host)
+            
+        port_ids = [item[0] for item in ports]
+        ports_len = len(port_ids)
+        port = None
+        if ports_len == 1:
+            port = self._get_by_id(context, models_v2.Port, port_ids[0])         
+            #port = self._core_plugin.get_port(context.elevated(), port_ids[0])
+                                
+        return port
+    
+    
+    def remove_gateway_interface1(self, context, router_id, router):
+        pass
+    
+    def remove_gateway_interface(self, context, router_id, router):
+        r = router['router']
+        gw_info = r.pop(l3.EXTERNAL_GW_INFO, attributes.ATTR_NOT_SPECIFIED)
+        
+        if gw_info != attributes.ATTR_NOT_SPECIFIED:
+            agent_id = gw_info.get('agent_id')
+            if agent_id:        
+                agent_db = self._get_agent(context, agent_id)  
+                
+                # validate if gateway port exist       
+                local_gw_port = self._get_gateway_port_for_agent(context, router_id, agent_db.host)
+                if (local_gw_port is None):
+                    msg = (_("Can't get alternative gateway port for L3 agent %(agent_id)s on host %(host)s") % 
+                           {'agent_id': agent_id, 'host':agent_db.host })
+                    raise n_exc.BadRequest(resource='router', msg=msg)
+        
+                LOG.debug( "Deleting local gateway port from L3 agent on host %s" % agent_db.host)
+                router_db = self._get_router(context, router_id)
+                self._delete_current_gw_port(context, router_id, router_db, None, local_gw_port)
+                
+                router_db = self._update_router_db(context, router_id, r)
+                
+                l3_plugin = manager.NeutronManager.get_service_plugins().get(
+                    constants.L3_ROUTER_NAT)
+                LOG.debug( "Gateway port on host %s is deleted from database, now notify agent about it")
+                l3_plugin.notify_agent_update(context, router_id, agent_db.host)
+        
+        res = self._make_router_dict(router_db)
+        self._add_agent_gw_info(context, res, router_db)
+        #return self._make_router_dict(router_db)
+        return res        
+
+    
+    def _check_router_on_agent_supports_alt_gateway(self, context, router_id, agent_id, gw_info):        
+        
+        l3_plugin = manager.NeutronManager.get_service_plugins().get(
+            constants.L3_ROUTER_NAT)
+        
+        network_id = gw_info.get('network_id') if gw_info else None
+        if not network_id:
+            return
+        # otherwise find l3 agent with matching gateway_external_network_id
+        agent_db_list = l3_plugin.get_l3_agents(
+            context, active=True,
+            filters={'id': [agent_id],
+                     'agent_modes':[l3_const.L3_AGENT_MODE_DVR_LOCAL_SNAT]})
+        
+        candidate = None
+        if len(agent_db_list) > 0:
+            candidate = agent_db_list[0]
+            LOG.debug( "Agent ID: %s " % candidate.id)
+        else:
+            msg = (_("Not found active L3 agent with ID: %(agent_id)s and agent mode %(mode)s") % 
+                       {'agent_id': agent_id, 'mode': l3_const.L3_AGENT_MODE_DVR_LOCAL_SNAT})
+            raise n_exc.BadRequest(resource='router', msg=msg)
+            
+         
+        return candidate
 
     def _create_router_db(self, context, router, tenant_id):
         """Create a router db object with dvr additions."""
@@ -148,7 +278,7 @@ class L3_NAT_with_dvr_db_mixin(l3_db.L3_NAT_db_mixin,
                                         agent['id'])
             return router_db
 
-    def _delete_current_gw_port(self, context, router_id, router, new_network):
+    def _delete_current_gw_port(self, context, router_id, router, new_network, gw_port = None):
         """
         Overriden here to handle deletion of dvr internal ports.
 
@@ -157,43 +287,48 @@ class L3_NAT_with_dvr_db_mixin(l3_db.L3_NAT_db_mixin,
         agent gateway port associated with the dvr router.
         """
 
-        gw_ext_net_id = (
-            router.gw_port['network_id'] if router.gw_port else None)
+        
 
         super(L3_NAT_with_dvr_db_mixin,
               self)._delete_current_gw_port(context, router_id,
-                                            router, new_network)
-        if (is_distributed_router(router) and
-            gw_ext_net_id != new_network and gw_ext_net_id is not None):
-            self.delete_csnat_router_interface_ports(
-                context.elevated(), router)
-            # NOTE(Swami): Delete the Floatingip agent gateway port
-            # on all hosts when it is the last gateway port in the
-            # given external network.
-            filters = {'network_id': [gw_ext_net_id],
-                       'device_owner': [l3_const.DEVICE_OWNER_ROUTER_GW]}
-            ext_net_gw_ports = self._core_plugin.get_ports(
-                context.elevated(), filters)
-            if not ext_net_gw_ports:
-                self.delete_floatingip_agent_gateway_port(
-                    context.elevated(), None, gw_ext_net_id)
-                # Send the information to all the L3 Agent hosts
-                # to clean up the fip namespace as it is no longer required.
-                self.l3_rpc_notifier.delete_fipnamespace_for_ext_net(
-                    context, gw_ext_net_id)
+                                            router, new_network, gw_port)
+          
+        if not gw_port:
+            gw_ext_net_id = (
+                router.gw_port['network_id'] if router.gw_port else None)    
+            # do extended operation only for legacy Network node gw port      
+            if (gw_port and is_distributed_router(router) and
+                gw_ext_net_id != new_network and gw_ext_net_id is not None):
+                self.delete_csnat_router_interface_ports(
+                    context.elevated(), router)
+                # NOTE(Swami): Delete the Floatingip agent gateway port
+                # on all hosts when it is the last gateway port in the
+                # given external network.
+                filters = {'network_id': [gw_ext_net_id],
+                           'device_owner': [l3_const.DEVICE_OWNER_ROUTER_GW]}
+                ext_net_gw_ports = self._core_plugin.get_ports(
+                    context.elevated(), filters)
+                if not ext_net_gw_ports:
+                    self.delete_floatingip_agent_gateway_port(
+                        context.elevated(), None, gw_ext_net_id)
+                    # Send the information to all the L3 Agent hosts
+                    # to clean up the fip namespace as it is no longer required.
+                    self.l3_rpc_notifier.delete_fipnamespace_for_ext_net(
+                        context, gw_ext_net_id)
 
     def _create_gw_port(self, context, router_id, router, new_network,
-                        ext_ips):
+                        ext_ips, agent_id = None):
         super(L3_NAT_with_dvr_db_mixin,
               self)._create_gw_port(context, router_id, router, new_network,
-                                    ext_ips)
+                                    ext_ips, agent_id)
         # Make sure that the gateway port exists before creating the
         # snat interface ports for distributed router.
-        if router.extra_attributes.distributed and router.gw_port:
-            snat_p_list = self._create_snat_intf_ports_if_not_exists(
-                context.elevated(), router)
-            if not snat_p_list:
-                LOG.debug("SNAT interface ports not created: %s", snat_p_list)
+        if not agent_id:
+            if router.extra_attributes.distributed and router.gw_port:
+                snat_p_list = self._create_snat_intf_ports_if_not_exists(
+                    context.elevated(), router)
+                if not snat_p_list:
+                    LOG.debug("SNAT interface ports not created: %s", snat_p_list)
 
     def _get_device_owner(self, context, router=None):
         """Get device_owner for the specified router."""
@@ -611,6 +746,9 @@ class L3_NAT_with_dvr_db_mixin(l3_db.L3_NAT_db_mixin,
         ports_to_populate += interfaces
         self._populate_mtu_and_subnets_for_ports(context, ports_to_populate)
         self._process_interfaces(routers_dict, interfaces)
+        # add alternative router port into dictionary
+        LOG.warning("------------> _get_dvr_sync_data: Before calling process_alternative_gw_port")
+        self._process_alternative_gw_port(context, routers_dict, host)
         return list(routers_dict.values())
 
     def _get_dvr_service_port_hostid(self, context, port_id, port=None):
@@ -1028,7 +1166,20 @@ class L3_NAT_with_dvr_db_mixin(l3_db.L3_NAT_db_mixin,
             update_port = self._core_plugin.update_port(
                 context, address_pair_port['id'], {'port': port_data})
             return update_port
-
+    
+    def test_get_sync_data(self, context, router_ids=None, active=None, host=None):
+        routers, interfaces, floating_ips = self._get_router_info_list(
+            context, router_ids=router_ids, active=active)
+        ports_to_populate = [router['gw_port'] for router in routers
+                             if router.get('gw_port')] + interfaces
+        self._populate_mtu_and_subnets_for_ports(context, ports_to_populate)
+        routers_dict = dict((router['id'], router) for router in routers)
+        self._process_floating_ips(context, routers_dict, floating_ips)
+        self._process_interfaces(routers_dict, interfaces)
+        # add alternative router port into dictionary
+        LOG.warning("------------> get_sync_data: Before calling process_alternative_gw_port")
+        self._process_alternative_gw_port(context, routers_dict, host)
+        return list(routers_dict.values())
 
 def is_distributed_router(router):
     """Return True if router to be handled is distributed."""

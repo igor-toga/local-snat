@@ -35,16 +35,19 @@ from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.common import rpc as n_rpc
 from neutron.common import utils
-from neutron.db import api as db_api
 from neutron.db import l3_agentschedulers_db as l3_agt
 from neutron.db import model_base
 from neutron.db import models_v2
 from neutron.db import standardattrdescription_db as st_attr
 from neutron.extensions import external_net
 from neutron.extensions import l3
+from neutron.extensions import portbindings
 from neutron import manager
 from neutron.plugins.common import constants
 from neutron.plugins.common import utils as p_utils
+from neutron.plugins.ml2 import models
+from neutron.plugins.ml2.models import PortBinding
+from syslog import LOG_WARNING
 
 LOG = logging.getLogger(__name__)
 
@@ -80,6 +83,11 @@ class RouterPort(model_base.BASEV2):
         models_v2.Port,
         backref=orm.backref('routerport', uselist=False, cascade="all,delete"),
         lazy='joined')
+    
+    # local GW port binding to agent
+    host = sa.Column(
+        sa.String(255))#,
+        #sa.ForeignKey('agents.host'))
 
 
 class Router(model_base.HasStandardAttributes, model_base.BASEV2,
@@ -174,7 +182,61 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         if process_extensions:
             self._apply_dict_extend_functions(l3.ROUTERS, res, router)
         return self._fields(res, fields)
+    
+    def _add_agent_gw_info(self, context, res, router):
+        
+        
+        routerport_qry = context.session.query(
+            RouterPort.port_id, RouterPort.host, models_v2.IPAllocation.ip_address,
+            models_v2.IPAllocation.subnet_id, models_v2.IPAllocation.network_id).join(
+            models_v2.Port, models_v2.IPAllocation).filter(
+            RouterPort.router_id == router['id'],
+            RouterPort.host.isnot(None)
+        )
 
+        agents_gw_info = []
+        curr_port_id = None
+        curr_network_id = None
+        curr_host = None
+        
+        for port_id, host, ip, subnet_id, network_id in routerport_qry:
+            # first if works only for the first row
+            if curr_port_id is None:
+                fixed_ips_list =  [{'subnet_id': subnet_id, 'ip_address': ip}]
+                curr_port_id = port_id
+                curr_network_id= network_id
+                curr_host = host
+                
+            elif curr_port_id == port_id: 
+                fixed_ips_list.append( [{'subnet_id': subnet_id, 'ip_address': ip}])
+                
+            else:
+                ext_gw_info = {
+                'network_id': curr_network_id,
+                'host': curr_host,
+                'external_fixed_ips': fixed_ips_list} 
+                agents_gw_info.append(ext_gw_info)
+                
+                fixed_ips_list =  [{'subnet_id': subnet_id, 'ip_address': ip}]
+                curr_port_id = port_id
+                curr_network_id= network_id
+                curr_host = host
+            
+            #LOG.warning("--------------port: ID %s, host %s, ip: %s, subnet %s, network: %s", 
+            #            port_id, host, ip, subnet_id, network_id)
+        
+        if curr_port_id:
+            ext_gw_info = {
+                    'network_id': curr_network_id,
+                    'host': curr_host,
+                    'external_fixed_ips': fixed_ips_list} 
+            agents_gw_info.append(ext_gw_info) 
+                
+            LOG.warning("-------> structure: %s", agents_gw_info)
+            res.update({
+                'agents_gw_info': agents_gw_info
+            })
+    
     def filter_allocating_and_missing_routers(self, context, routers):
         """Filter out routers that shouldn't go to the agent.
 
@@ -247,6 +309,15 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         if gw_info != attributes.ATTR_NOT_SPECIFIED:
             candidates = self._check_router_needs_rescheduling(
                 context, id, gw_info)
+            # collect all agents that required to reschedule its local gw port
+            ports_to_delete = context.session.query(RouterPort).filter(
+                RouterPort.router_id == id,
+                RouterPort.host.isnot(None))
+            
+            hosts_to_notify = []
+            for port in ports_to_delete:
+                hosts_to_notify.append(port.host)
+            
             # Update the gateway outside of the DB update since it involves L2
             # calls that don't make sense to rollback and may cause deadlocks
             # in a transaction.
@@ -254,9 +325,17 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         else:
             candidates = None
         router_db = self._update_router_db(context, id, r)
-        if candidates:
-            l3_plugin = manager.NeutronManager.get_service_plugins().get(
+        
+        l3_plugin = manager.NeutronManager.get_service_plugins().get(
                 constants.L3_ROUTER_NAT)
+        LOG.info("------> update_router: hosts_to_notify %s", hosts_to_notify)
+        LOG.info("------> update_router: candidates %s", candidates)
+        for host_to_notify in hosts_to_notify:
+            LOG.info("------> update_router: notify called for host %s", host_to_notify)
+            l3_plugin.notify_agent_update(context, id, host_to_notify)
+            
+        if candidates:
+            LOG.info("------> update_router: reschedule")
             l3_plugin.reschedule_router(context, id, candidates)
         return self._make_router_dict(router_db)
 
@@ -278,12 +357,14 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         # not really a proper place for agent scheduling stuff
         network_id = gw_info.get('network_id') if gw_info else None
         if not network_id:
+            LOG.debug("-----------> Error(1): Obtaining candidates")
             return
 
         nets = self._core_plugin.get_networks(
             context, {external_net.EXTERNAL: [True]})
         # nothing to do if there is only one external network
         if len(nets) <= 1:
+            LOG.debug("-----------> Error(2): Obtaining candidates")
             return
 
         # first get plugin supporting l3 agent scheduling
@@ -296,6 +377,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             l3_plugin.router_scheduler is None):
             # that might mean that we are dealing with non-agent-based
             # implementation of l3 services
+            LOG.debug("-----------> Error(3): Obtaining candidates")
             return
 
         cur_agents = l3_plugin.list_l3_agents_hosting_router(
@@ -306,9 +388,11 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             ext_bridge = agent['configurations'].get(
                 'external_network_bridge', 'br-ex')
             if (ext_net_id == network_id or
-                    (not ext_net_id and not ext_bridge)):
+                   (not ext_net_id and not ext_bridge)):
+                LOG.debug("-----------> Error(4): Obtaining candidates")
                 return
 
+        LOG.debug("-----------> Obtaining candidates")
         # otherwise find l3 agent with matching gateway_external_network_id
         active_agents = l3_plugin.get_l3_agents(context, active=True)
         router = {
@@ -325,13 +409,17 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
         return candidates
 
-    def _create_router_gw_port(self, context, router, network_id, ext_ips):
+    def _create_router_gw_port(self, context, router, network_id, ext_ips, agent_id = None):
         # Port has no 'tenant-id', as it is hidden from user
+        device_owner = DEVICE_OWNER_ROUTER_GW
+        if agent_id:
+            device_owner = l3_constants.DEVICE_OWNER_ROUTER_LOCAL_GW
+            
         port_data = {'tenant_id': '',  # intentionally not set
                      'network_id': network_id,
                      'fixed_ips': ext_ips or attributes.ATTR_NOT_SPECIFIED,
                      'device_id': router['id'],
-                     'device_owner': DEVICE_OWNER_ROUTER_GW,
+                     'device_owner': device_owner,
                      'admin_state_up': True,
                      'name': ''}
         gw_port = p_utils.create_port(self._core_plugin,
@@ -341,15 +429,24 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             LOG.debug('No IPs available for external network %s',
                       network_id)
 
+        agent_host = None
+        if agent_id:
+            agent_db = self._get_agent(context, agent_id)
+            agent_host = agent_db.host
+        
         with context.session.begin(subtransactions=True):
-            router.gw_port = self._core_plugin._get_port(context.elevated(),
+            if not agent_id:
+                router.gw_port = self._core_plugin._get_port(context.elevated(),
                                                          gw_port['id'])
             router_port = RouterPort(
                 router_id=router.id,
                 port_id=gw_port['id'],
-                port_type=DEVICE_OWNER_ROUTER_GW
+                port_type=device_owner,
+                host=agent_host
+                
             )
-            context.session.add(router)
+            if not agent_id:
+                context.session.add(router)
             context.session.add(router_port)
 
     def _validate_gw_info(self, context, gw_port, info, ext_ips):
@@ -372,27 +469,78 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                             raise n_exc.BadRequest(resource='router', msg=msg)
         return network_id
 
+    def test_query(self, context, router_id, router):
+        LOG.debug("----------------- > DVR_LOCAL_SNAT checking routerports tables for host that match %s" , router_id)
+        router_ids = [router_id]
+        
+        query = context.session.query(
+                RouterPort.router_id).filter(
+                        RouterPort.host.is_(None), 
+                        RouterPort.router_id.in_(router_ids))
+        
+        LOG.warning ("routers.count: %d", query.count() )
+        LOG.warning ("routers: %s", [item[0] for item in query])
+        #return [item[0] for item in query]
+                
+            
+    def _delete_alternative_gw_ports(self, context, router_id, router):
+        
+        # search for alternative router ports according to non empty host field
+        query = context.session.query(RouterPort.port_id).filter(
+            RouterPort.router_id == router_id,
+            RouterPort.host.isnot(None))
+        
+        
+        ports_to_delete = [ item[0] for item in query]
+        with context.session.begin(subtransactions=True):
+               context.session.add(router)
+               for port_id in ports_to_delete:
+                   LOG.warning("-------------------> _delete_alternative_gw_ports, port to delete:    %s", port_id)
+                   port = self._core_plugin.get_port(context.elevated(), port_id) 
+                   context.session.expire(port)
+                                
+
     def _delete_current_gw_port(self, context, router_id, router,
-                                new_network_id):
+                                new_network_id, gw_port = None):
         """Delete gw port if attached to an old network."""
+        def_gw_port = False
+        
+        if (gw_port == None):
+            LOG.debug("==============> NOT Passed gateway port")
+            gw_port = router.gw_port
+            def_gw_port = True
+        else:
+            LOG.debug("==============> Passed gateway port: %s", gw_port['id'])
+            
         port_requires_deletion = (
-            router.gw_port and router.gw_port['network_id'] != new_network_id)
+            gw_port and gw_port['network_id'] != new_network_id)
+        
         if not port_requires_deletion:
             return
         admin_ctx = context.elevated()
-        old_network_id = router.gw_port['network_id']
+        old_network_id = gw_port['network_id']
 
-        if self.get_floatingips_count(
-            admin_ctx, {'router_id': [router_id]}):
-            raise l3.RouterExternalGatewayInUseByFloatingIp(
-                router_id=router_id, net_id=router.gw_port['network_id'])
-        gw_ips = [x['ip_address'] for x in router.gw_port.fixed_ips]
+        if def_gw_port:
+            pass
+            # TODO return below code to production
+            #self._delete_alternative_gw_ports(context, router_id, router)
+            
+            # understand implication of this condition !!!
+            if self.get_floatingips_count(
+                admin_ctx, {'router_id': [router_id]}):
+                raise l3.RouterExternalGatewayInUseByFloatingIp(
+                    router_id=router_id, net_id=gw_port['network_id'])
+        
+        LOG.debug("------------_delete_current_gw_port, fixed_ips %s", gw_port.fixed_ips)
+        gw_ips = [x['ip_address'] for x in gw_port.fixed_ips]
         with context.session.begin(subtransactions=True):
-            gw_port = router.gw_port
-            router.gw_port = None
+            if def_gw_port:
+                router.gw_port = None
             context.session.add(router)
             context.session.expire(gw_port)
             self._check_router_gw_port_in_use(context, router_id)
+            
+        LOG.debug("------------_delete_current_gw_port, port to delete %s", gw_port['id'])
         self._core_plugin.delete_port(
             admin_ctx, gw_port['id'], l3_port_check=False)
         registry.notify(resources.ROUTER_GATEWAY,
@@ -413,10 +561,22 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                     raise e.errors[0].error
                 raise l3.RouterInUse(router_id=router_id, reason=e)
 
+    def _check_for_dup_gateway_on_agent(self, context, router, agent_id):
+        l3_plugin = manager.NeutronManager.get_service_plugins().get(
+            constants.L3_ROUTER_NAT)
+        agent_db = l3_plugin._get_agent(context, agent_id)
+        
+        for rp in router.attached_ports:
+            if ( agent_db.host == rp.host):
+                msg = (_("Router on agent %(agent_id)s already has a gateway port  %(id)s") % 
+                       {'agent_id': agent_id, 'id': rp.port_id})
+                raise n_exc.BadRequest(resource='router', msg=msg)
+        
+
     def _create_gw_port(self, context, router_id, router, new_network_id,
-                        ext_ips):
+                        ext_ips, agent_id = None):
         new_valid_gw_port_attachment = (
-            new_network_id and (not router.gw_port or
+            new_network_id and (agent_id or not router.gw_port or
                               router.gw_port['network_id'] != new_network_id))
         if new_valid_gw_port_attachment:
             subnets = self._core_plugin.get_subnets_by_network(context,
@@ -431,10 +591,13 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 # raise the underlying exception
                 raise e.errors[0].error
 
-            self._check_for_dup_router_subnets(context, router,
+            if agent_id:
+                self._check_for_dup_gateway_on_agent(context, router, agent_id)
+            else:
+                self._check_for_dup_router_subnets(context, router,
                                                new_network_id, subnets)
             self._create_router_gw_port(context, router,
-                                        new_network_id, ext_ips)
+                                        new_network_id, ext_ips, agent_id)
             registry.notify(resources.ROUTER_GATEWAY,
                             events.AFTER_CREATE,
                             self._create_gw_port,
@@ -442,10 +605,13 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                             network_id=new_network_id,
                             router_id=router_id)
 
-    def _update_current_gw_port(self, context, router_id, router, ext_ips):
-        self._core_plugin.update_port(context, router.gw_port['id'], {'port':
+    def _update_current_gw_port(self, context, router_id, router, ext_ips, gw_port = None):
+        if not gw_port:
+            gw_port = router.gw_port
+            
+        self._core_plugin.update_port(context, gw_port['id'], {'port':
                                       {'fixed_ips': ext_ips}})
-        context.session.expire(router.gw_port)
+        context.session.expire(gw_port)
 
     def _update_router_gw_info(self, context, router_id, info, router=None):
         # TODO(salvatore-orlando): guarantee atomic behavior also across
@@ -457,12 +623,20 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         ext_ip_change = self._check_for_external_ip_change(
             context, gw_port, ext_ips)
         network_id = self._validate_gw_info(context, gw_port, info, ext_ips)
+        
+        LOG.warning("-------------------------------------------")
+        LOG.warning("---------> gw_port= %s", gw_port)
+        LOG.warning("--------->network_id %s", network_id)
+        LOG.warning("---------> external_ip_change %s", ext_ip_change )
         if gw_port and ext_ip_change and gw_port['network_id'] == network_id:
+            LOG.warning("===============>  Update current gw port" )
             self._update_current_gw_port(context, router_id, router,
                                          ext_ips)
         else:
+            LOG.warning("=(1)=============>  delete gw port" )
             self._delete_current_gw_port(context, router_id, router,
                                          network_id)
+            LOG.warning("=(2)=============>  create gw port" )
             self._create_gw_port(context, router_id, router, network_id,
                                  ext_ips)
 
@@ -1593,7 +1767,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             floating_ips = self._get_sync_floating_ips(context, router_ids)
             return (routers, interfaces, floating_ips)
 
-    def get_sync_data(self, context, router_ids=None, active=None):
+    def get_sync_data(self, context, router_ids=None, active=None, host = None):
         routers, interfaces, floating_ips = self._get_router_info_list(
             context, router_ids=router_ids, active=active)
         ports_to_populate = [router['gw_port'] for router in routers
@@ -1602,6 +1776,9 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         routers_dict = dict((router['id'], router) for router in routers)
         self._process_floating_ips(context, routers_dict, floating_ips)
         self._process_interfaces(routers_dict, interfaces)
+        # add alternative router port into dictionary
+        LOG.warning("------------> get_sync_data: Before calling process_alternative_gw_port")
+        self._process_alternative_gw_port(context, routers_dict, host)
         return list(routers_dict.values())
 
 
@@ -1727,6 +1904,50 @@ class L3_NAT_db_mixin(L3_NAT_dbonly_mixin, L3RpcNotifierMixin):
         super(L3_NAT_db_mixin, self).notify_routers_updated(
             context, list(router_ids), 'disassociate_floatingips', {})
 
+    def _get_router_ids_for_agent_with_local_snat(self, context, agent, router_ids):
+        
+        LOG.debug("----------------- > DVR_LOCAL_SNAT checking routerports tables for host that match %s", agent.host)
+        query = context.session.query(
+                RouterPort.router_id).filter(
+                        RouterPort.host == agent.host)
+                
+        if router_ids:
+            query = query.filter(RouterPort.router_id.in_(router_ids))
+        
+        return [item[0] for item in query]
+        
+            
+    def _process_alternative_gw_port(self, context, routers_dict, host):
+        # Called by sync_routers/ _ensure_host_set_on_port
+        if not host:
+            LOG.warning("No host provided, do nothing ( legacy routing mode)")
+            return
+        
+        for router in routers_dict.values():
+            # choose port:
+            #    -  on current router  
+            #    - port's host match given agent host
+            #    - unbound status => means that port is still not updated on agent 
+            ports = context.session.query(
+                RouterPort.port_id).filter(
+                    RouterPort.router_id == router['id'],
+                    RouterPort.host == host, RouterPort.host.isnot(None))
+            
+            port_ids = [item[0] for item in ports]
+            ports_len = len(port_ids)
+            if ports_len == 1:           
+                port = self._core_plugin.get_port(context.elevated(), port_ids[0])
+                LOG.warning("Current router port ID: %s, host: %s", router['gw_port'], router['gw_port_host'])            
+                LOG.warning("Overridden router port ID: %s, host: %s", port, host)
+                    
+                router['gw_port'] = port
+                router['gw_port_host'] = host
+            else:
+                if ports_len > 1:
+                    LOG.warning("Bad number of alternative ports found : %d", ports_len)
+                else:
+                    LOG.debug("Gateway port is NOT overridden")
+    
 
 def _prevent_l3_port_delete_callback(resource, event, trigger, **kwargs):
     context = kwargs['context']

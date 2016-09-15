@@ -711,7 +711,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                                   router_ids=None, active=None):
         agent_mode = self._get_agent_mode(agent)
         dvr_agent_mode = (agent_mode in [constants.L3_AGENT_MODE_DVR_SNAT,
-                                         constants.L3_AGENT_MODE_DVR])
+                                         constants.L3_AGENT_MODE_DVR, 
+                                         constants.L3_AGENT_MODE_DVR_LOCAL_SNAT ])
         if (dvr_agent_mode and n_utils.is_extension_supported(
                 self, constants.L3_DISTRIBUTED_EXT_ALIAS)):
             # DVR has to be handled differently
@@ -719,7 +720,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                                                 router_ids, active)
         else:
             sync_data = super(L3_HA_NAT_db_mixin, self).get_sync_data(context,
-                                                            router_ids, active)
+                                                            router_ids, active, host)
         return self._process_sync_ha_data(context, sync_data, host)
 
     @classmethod

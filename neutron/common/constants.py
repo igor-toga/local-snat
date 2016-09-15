@@ -19,9 +19,9 @@ from neutron_lib import constants as lib_constants
 
 from neutron.common import _deprecate
 
-
+DEVICE_OWNER_ROUTER_LOCAL_GW = lib_constants.DEVICE_OWNER_NETWORK_PREFIX + "router_local_gateway"
 ROUTER_PORT_OWNERS = lib_constants.ROUTER_INTERFACE_OWNERS_SNAT + \
-    (lib_constants.DEVICE_OWNER_ROUTER_GW,)
+    (lib_constants.DEVICE_OWNER_ROUTER_GW, DEVICE_OWNER_ROUTER_LOCAL_GW,)
 
 ROUTER_STATUS_ACTIVE = 'ACTIVE'
 # NOTE(kevinbenton): a BUILD status for routers could be added in the future
@@ -30,6 +30,7 @@ ROUTER_STATUS_ACTIVE = 'ACTIVE'
 ROUTER_STATUS_ALLOCATING = 'ALLOCATING'
 L3_AGENT_MODE_DVR = 'dvr'
 L3_AGENT_MODE_DVR_SNAT = 'dvr_snat'
+L3_AGENT_MODE_DVR_LOCAL_SNAT = 'dvr_local_snat'
 L3_AGENT_MODE_LEGACY = 'legacy'
 L3_AGENT_MODE = 'agent_mode'
 

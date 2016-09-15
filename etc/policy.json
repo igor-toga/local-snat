@@ -102,6 +102,8 @@
 
     "add_router_interface": "rule:admin_or_owner",
     "remove_router_interface": "rule:admin_or_owner",
+    "add_gateway_interface": "rule:admin_or_owner",
+    "remove_gateway_interface": "rule:admin_or_owner",
 
     "create_router:external_gateway_info:external_fixed_ips": "rule:admin_only",
     "update_router:external_gateway_info:external_fixed_ips": "rule:admin_only",
