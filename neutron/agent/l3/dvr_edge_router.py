@@ -172,6 +172,7 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
 
     def _is_this_snat_host(self):
         host = self.router.get('gw_port_host')
+        LOG.warning("_is_this_snat_host: attribute gw_port_host: %s, self host: %s", host, self.host)
         if not host:
             LOG.debug("gw_port_host missing from router: %s",
                       self.router['id'])

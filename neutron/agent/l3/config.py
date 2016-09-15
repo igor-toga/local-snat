@@ -25,7 +25,8 @@ OPTS = [
     cfg.StrOpt('agent_mode', default=constants.L3_AGENT_MODE_LEGACY,
                choices=(constants.L3_AGENT_MODE_DVR,
                         constants.L3_AGENT_MODE_DVR_SNAT,
-                        constants.L3_AGENT_MODE_LEGACY),
+                        constants.L3_AGENT_MODE_LEGACY,
+                        constants.L3_AGENT_MODE_DVR_LOCAL_SNAT),
                help=_("The working mode for the agent. Allowed modes are: "
                       "'legacy' - this preserves the existing behavior "
                       "where the L3 agent is deployed on a centralized "
@@ -37,7 +38,8 @@ OPTS = [
                       "enables centralized SNAT support in conjunction "
                       "with DVR.  This mode must be used for an L3 agent "
                       "running on a centralized node (or in single-host "
-                      "deployments, e.g. devstack)")),
+                      "deployments, e.g. devstack), 'dvr-local-snat' enables "
+                      "local external network connectivity for specific l3 agent")),
     cfg.PortOpt('metadata_port',
                 default=9697,
                 help=_("TCP Port used by Neutron metadata namespace proxy.")),

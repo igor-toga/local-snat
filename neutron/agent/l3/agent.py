@@ -28,6 +28,7 @@ from neutron.agent.common import utils as common_utils
 from neutron.agent.l3 import dvr
 from neutron.agent.l3 import dvr_edge_ha_router
 from neutron.agent.l3 import dvr_edge_router as dvr_router
+from neutron.agent.l3 import dvr_local_edge_router 
 from neutron.agent.l3 import dvr_local_router as dvr_local_router
 from neutron.agent.l3 import ha
 from neutron.agent.l3 import ha_router
@@ -329,8 +330,12 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
                 return dvr_edge_ha_router.DvrEdgeHaRouter(*args, **kwargs)
 
         if router.get('distributed'):
-            if self.conf.agent_mode == l3_constants.L3_AGENT_MODE_DVR_SNAT:
+            if self.conf.agent_mode == l3_constants.L3_AGENT_MODE_DVR_SNAT: 
                 return dvr_router.DvrEdgeRouter(*args, **kwargs)
+            
+            elif self.conf.agent_mode == l3_constants.L3_AGENT_MODE_DVR_LOCAL_SNAT:
+                LOG.debug("----------------> Create agent in a new mode dvr_local_snat")
+                return dvr_local_edge_router.DvrLocalEdgeRouter(*args, **kwargs)
             else:
                 return dvr_local_router.DvrLocalRouter(*args, **kwargs)
 
@@ -472,6 +477,7 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
             router = update.router
             if update.action != queue.DELETE_ROUTER and not router:
                 try:
+                    LOG.warning("--------------> Process router update")
                     update.timestamp = timeutils.utcnow()
                     routers = self.plugin_rpc.get_routers(self.context,
                                                           [update.id])
@@ -557,6 +563,7 @@ class L3NATAgent(firewall_l3_agent.FWaaSL3AgentRpcCallback,
             # fetch routers by chunks to reduce the load on server and to
             # start router processing earlier
             for i in range(0, len(router_ids), self.sync_routers_chunk_size):
+                LOG.warning("-------------------------------> Fetch and sync all routers")
                 routers = self.plugin_rpc.get_routers(
                     context, router_ids[i:i + self.sync_routers_chunk_size])
                 LOG.debug('Processing :%r', routers)

@@ -28,6 +28,7 @@ INTERNAL_DEV_PREFIX = 'qr-'
 EXTERNAL_DEV_PREFIX = 'qg-'
 # TODO(Carl) It is odd that this file needs this.  It is a dvr detail.
 ROUTER_2_FIP_DEV_PREFIX = 'rfp-'
+ROUTER_2_SNAT_DEV_PREFIX = 'r2snat-'
 
 
 def build_ns_name(prefix, identifier):
