@@ -139,6 +139,7 @@ def upgrade():
         sa.Column('port_id', sa.String(length=36), nullable=False),
         sa.Column('port_type', sa.String(length=255)),
         sa.Column('host', sa.String(length=255)),
+        sa.Column('gateway_ip', sa.String(length=64), nullable=True),
         sa.PrimaryKeyConstraint('router_id', 'port_id'),
         sa.ForeignKeyConstraint(
             ['router_id'],

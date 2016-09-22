@@ -88,7 +88,7 @@ class RouterPort(model_base.BASEV2):
     host = sa.Column(
         sa.String(255))#,
         #sa.ForeignKey('agents.host'))
-
+    gateway_ip = sa.Column(sa.String(64))
 
 class Router(model_base.HasStandardAttributes, model_base.BASEV2,
              model_base.HasId, model_base.HasTenant):
@@ -187,7 +187,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         
         
         routerport_qry = context.session.query(
-            RouterPort.port_id, RouterPort.host, models_v2.IPAllocation.ip_address,
+            RouterPort.port_id, RouterPort.host, RouterPort.gateway_ip, models_v2.IPAllocation.ip_address,
             models_v2.IPAllocation.subnet_id, models_v2.IPAllocation.network_id).join(
             models_v2.Port, models_v2.IPAllocation).filter(
             RouterPort.router_id == router['id'],
@@ -199,7 +199,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         curr_network_id = None
         curr_host = None
         
-        for port_id, host, ip, subnet_id, network_id in routerport_qry:
+        for port_id, host, alt_gateway_ip, ip, subnet_id, network_id in routerport_qry:
             # first if works only for the first row
             if curr_port_id is None:
                 fixed_ips_list =  [{'subnet_id': subnet_id, 'ip_address': ip}]
@@ -214,6 +214,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 ext_gw_info = {
                 'network_id': curr_network_id,
                 'host': curr_host,
+                'alt_gateway_ip':alt_gateway_ip,
                 'external_fixed_ips': fixed_ips_list} 
                 agents_gw_info.append(ext_gw_info)
                 
@@ -229,6 +230,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             ext_gw_info = {
                     'network_id': curr_network_id,
                     'host': curr_host,
+                    'alt_gateway_ip': alt_gateway_ip,
                     'external_fixed_ips': fixed_ips_list} 
             agents_gw_info.append(ext_gw_info) 
                 
@@ -409,7 +411,8 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
         return candidates
 
-    def _create_router_gw_port(self, context, router, network_id, ext_ips, agent_id = None):
+    def _create_router_gw_port(self, context, router, network_id, ext_ips,
+                                agent_id = None, host_gateway_ip = None):
         # Port has no 'tenant-id', as it is hidden from user
         device_owner = DEVICE_OWNER_ROUTER_GW
         if agent_id:
@@ -442,7 +445,8 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 router_id=router.id,
                 port_id=gw_port['id'],
                 port_type=device_owner,
-                host=agent_host
+                host=agent_host,
+                gateway_ip = host_gateway_ip
                 
             )
             if not agent_id:
@@ -574,7 +578,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         
 
     def _create_gw_port(self, context, router_id, router, new_network_id,
-                        ext_ips, agent_id = None):
+                        ext_ips, agent_id = None, host_gateway_ip = None):
         new_valid_gw_port_attachment = (
             new_network_id and (agent_id or not router.gw_port or
                               router.gw_port['network_id'] != new_network_id))
@@ -597,7 +601,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 self._check_for_dup_router_subnets(context, router,
                                                new_network_id, subnets)
             self._create_router_gw_port(context, router,
-                                        new_network_id, ext_ips, agent_id)
+                                        new_network_id, ext_ips, agent_id, host_gateway_ip)
             registry.notify(resources.ROUTER_GATEWAY,
                             events.AFTER_CREATE,
                             self._create_gw_port,
@@ -1718,9 +1722,16 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 # in the port's fixed_ips), then add this subnet to the
                 # port's subnets list, and populate the fixed_ips entry
                 # entry with the subnet's prefix length.
+                gateway_ip = subnet['gateway_ip']
+                if port.has_key('alt_gateway_ip'):
+                    if netaddr.IPAddress(port['alt_gateway_ip']) in cidr:
+                        gateway_ip = port['alt_gateway_ip']
+                        LOG.warning("Override subnet gateway only for match subnet %s", subnet['cidr'] )
+                
+                LOG.warning("---------------------> _populate_mtu_and_subnets_for_ports:  Setting alternative gateway IP %s", gateway_ip )     
                 subnet_info = {'id': subnet['id'],
                                'cidr': subnet['cidr'],
-                               'gateway_ip': subnet['gateway_ip'],
+                               'gateway_ip': gateway_ip, #subnet['gateway_ip'],
                                'dns_nameservers': subnet['dns_nameservers'],
                                'ipv6_ra_mode': subnet['ipv6_ra_mode'],
                                'subnetpool_id': subnet['subnetpool_id']}
@@ -1770,15 +1781,18 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
     def get_sync_data(self, context, router_ids=None, active=None, host = None):
         routers, interfaces, floating_ips = self._get_router_info_list(
             context, router_ids=router_ids, active=active)
+        
+        # add alternative router port into dictionary
+        for router in routers:
+            self._process_alternative_gw_port(context, router, host)
+            
         ports_to_populate = [router['gw_port'] for router in routers
                              if router.get('gw_port')] + interfaces
         self._populate_mtu_and_subnets_for_ports(context, ports_to_populate)
         routers_dict = dict((router['id'], router) for router in routers)
         self._process_floating_ips(context, routers_dict, floating_ips)
         self._process_interfaces(routers_dict, interfaces)
-        # add alternative router port into dictionary
-        LOG.warning("------------> get_sync_data: Before calling process_alternative_gw_port")
-        self._process_alternative_gw_port(context, routers_dict, host)
+        
         return list(routers_dict.values())
 
 
@@ -1917,36 +1931,40 @@ class L3_NAT_db_mixin(L3_NAT_dbonly_mixin, L3RpcNotifierMixin):
         return [item[0] for item in query]
         
             
-    def _process_alternative_gw_port(self, context, routers_dict, host):
+    def _process_alternative_gw_port(self, context, router, host):
         # Called by sync_routers/ _ensure_host_set_on_port
         if not host:
             LOG.warning("No host provided, do nothing ( legacy routing mode)")
             return
         
-        for router in routers_dict.values():
-            # choose port:
-            #    -  on current router  
-            #    - port's host match given agent host
-            #    - unbound status => means that port is still not updated on agent 
-            ports = context.session.query(
-                RouterPort.port_id).filter(
-                    RouterPort.router_id == router['id'],
-                    RouterPort.host == host, RouterPort.host.isnot(None))
-            
-            port_ids = [item[0] for item in ports]
-            ports_len = len(port_ids)
-            if ports_len == 1:           
-                port = self._core_plugin.get_port(context.elevated(), port_ids[0])
+        
+        # choose port:
+        #    -  on current router  
+        #    - port's host match given agent host
+        #    - unbound status => means that port is still not updated on agent 
+        ports = context.session.query(
+            RouterPort.port_id, RouterPort.gateway_ip).filter(
+                RouterPort.router_id == router['id'],
+                RouterPort.host == host, RouterPort.host.isnot(None))
+        
+        ports_len = ports.count()
+        if ports_len == 1:
+            for port_id, host_gateway_ip in ports:
+            #port_ids = [item[0] for item in ports]
+            #ports_len = len(port_ids)
+                       
+                port = self._core_plugin.get_port(context.elevated(), port_id)
                 LOG.warning("Current router port ID: %s, host: %s", router['gw_port'], router['gw_port_host'])            
-                LOG.warning("Overridden router port ID: %s, host: %s", port, host)
+                LOG.warning("Overridden router port ID: %s, host: %s, alt gateway ip", port, host, host_gateway_ip )
                     
                 router['gw_port'] = port
                 router['gw_port_host'] = host
+                port['alt_gateway_ip'] = host_gateway_ip 
+        else:
+            if ports_len > 1:
+                LOG.warning("Bad number of alternative ports found : %d", ports_len)
             else:
-                if ports_len > 1:
-                    LOG.warning("Bad number of alternative ports found : %d", ports_len)
-                else:
-                    LOG.debug("Gateway port is NOT overridden")
+                LOG.debug("Gateway port is NOT overridden")
     
 
 def _prevent_l3_port_delete_callback(resource, event, trigger, **kwargs):
