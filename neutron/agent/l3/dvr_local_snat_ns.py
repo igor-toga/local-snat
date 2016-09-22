@@ -11,7 +11,9 @@
 #    under the License.
 import netaddr
 from oslo_log import log as logging
+from oslo_utils import excutils
 
+from neutron._i18n import _LE, _LW
 from neutron.agent.l3 import namespaces
 from neutron.agent.linux import ip_lib
 #from neutron.common import constants
@@ -21,16 +23,19 @@ from neutron.agent.linux import iptables_manager
 from neutron.common import utils as common_utils
 from neutron.ipam import utils as ipam_utils
 
+
 LOG = logging.getLogger(__name__)
 SNAT_NS_PREFIX = 'snat-'
-#SNAT_INT_DEV_PREFIX = constants.SNAT_INT_DEV_PREFIX
 
 EXT_DEV_PREFIX = namespaces.EXTERNAL_DEV_PREFIX
 SNAT_2_ROUTER_DEV_PREFIX = 'snat2r-'
 ROUTER_2_SNAT_DEV_PREFIX = namespaces.ROUTER_2_SNAT_DEV_PREFIX
 # Route Table index for FIPs
 SNAT_RT_TBL = 18
-SNAT_LL_SUBNET = '169.254.128.0/31'
+SNAT_LL_SUBNET = '169.254.128.128/31'
+ROUTER_2_SNAT_IP_ADDR = '169.254.128.128'
+SNAT_2_ROUTER_IP_ADDR = '169.254.128.129'
+SNAT_PREFIXLEN = 31
 # Rule priority 
 SNAT_PR_START = 167772100
 
@@ -42,17 +47,46 @@ class LocalSnatNamespace(namespaces.Namespace):
         super(LocalSnatNamespace, self).__init__(
             self.name, agent_conf, driver, use_ipv6)
         
-        self.agent_gateway_port = None
+        #self.agent_gateway_port = None
         self._rule_priority = frpa.FipPriority(str(SNAT_PR_START))
         
-        self._iptables_manager = iptables_manager.IptablesManager(
-            namespace=self.name,
-            use_ipv6=self.use_ipv6)
+        #self._iptables_manager = iptables_manager.IptablesManager(
+        #    namespace=self.name,
+        #    use_ipv6=self.use_ipv6)
         # SNAT namespace need a single vpair for all VM's on host
         # This is unlike FIPs subnets generated for every VM
         subnet = netaddr.IPNetwork(SNAT_LL_SUBNET)
         self.vpair = lla.LinkLocalAddressPair(subnet)
-        
+     
+     
+    
+    def get_r2snat_interface(self, router_id):
+        mac = None
+        ip_wrapper = ip_lib.IPWrapper(namespace=self.name)
+        for d in ip_wrapper.get_devices(exclude_loopback=True):
+            if d.name.startswith(ROUTER_2_SNAT_DEV_PREFIX):
+                mac = d.link.address
+                break
+        res = {"id": self.get_rtr_ext_device_name(router_id),
+               "mac_address": mac,
+               "fixed_ips": [{'subnet_id': '0000-0000',
+                              'ip_address': ROUTER_2_SNAT_IP_ADDR}],
+               }
+        return res
+
+    def get_snat2r_interface(self, router_id):
+        mac = None
+        ip_wrapper = ip_lib.IPWrapper(namespace=self.name)
+        for d in ip_wrapper.get_devices(exclude_loopback=True):
+            if d.name.startswith(SNAT_2_ROUTER_DEV_PREFIX):
+                mac = d.link.address
+                break
+        res = {"id": self.get_int_device_name(router_id),
+               "mac_address": mac,
+               "fixed_ips": [{'subnet_id': '0000-0000',
+                              'ip_address': SNAT_2_ROUTER_IP_ADDR}],
+               }
+        return res
 
 
     @classmethod
@@ -70,123 +104,25 @@ class LocalSnatNamespace(namespaces.Namespace):
 
 
 
-        
-    def _gateway_added(self, ex_gw_port, interface_name):
-        """Add Local Snat IP gateway port."""
-        LOG.warning("add gateway interface(%s)", interface_name)
-        ns_name = self.name
-        self.driver.plug(ex_gw_port['network_id'],
-                         ex_gw_port['id'],
-                         interface_name,
-                         ex_gw_port['mac_address'],
-                         bridge=self.agent_conf.external_network_bridge,
-                         namespace=ns_name,
-                         prefix=EXT_DEV_PREFIX,
-                         mtu=ex_gw_port.get('mtu'))
-
-        # Remove stale fg devices
-        ip_wrapper = ip_lib.IPWrapper(namespace=ns_name)
-        devices = ip_wrapper.get_devices()
-        for device in devices:
-            name = device.name
-            if name.startswith(EXT_DEV_PREFIX) and name != interface_name:
-                ext_net_bridge = self.agent_conf.external_network_bridge
-                self.driver.unplug(name,
-                                   bridge=ext_net_bridge,
-                                   namespace=ns_name,
-                                   prefix=EXT_DEV_PREFIX)
-
-        ip_cidrs = common_utils.fixed_ip_cidrs(ex_gw_port['fixed_ips'])
-        self.driver.init_l3(interface_name, ip_cidrs, namespace=ns_name,
-                            clean_connections=True)
-
-        self.update_gateway_port(ex_gw_port)
-
-        cmd = ['sysctl', '-w', 'net.ipv4.conf.%s.proxy_arp=1' % interface_name]
-        ip_wrapper.netns.execute(cmd, check_exit_code=False)
-
-
-
     def delete(self):
+        
+        LOG.warning("delete")
         self.destroyed = True
         ip_wrapper = ip_lib.IPWrapper(namespace=self.name)
         for d in ip_wrapper.get_devices(exclude_loopback=True):
             if d.name.startswith(SNAT_2_ROUTER_DEV_PREFIX):
+                # update local ARP table
+                #self._update_snat_arp_entry(d, 'delete')
                 # internal link between IRs and FIP NS
                 ip_wrapper.del_veth(d.name)
-            #===================================================================
-            # elif d.name.startswith(EXT_DEV_PREFIX):
-            #     # single port from FIP NS to br-ext
-            #     # TODO(carl) Where does the port get deleted?
-            #     LOG.debug('DVR: unplug: %s', d.name)
-            #     ext_net_bridge = self.agent_conf.external_network_bridge
-            #     self.driver.unplug(d.name,
-            #                        bridge=ext_net_bridge,
-            #                        namespace=self.name,
-            #                        prefix=EXT_DEV_PREFIX)
-            #===================================================================
-        self.agent_gateway_port = None
+ 
+        #self.agent_gateway_port = None
 
         # TODO(mrsmith): add LOG warn if fip count != 0
         LOG.warning('DVR: destroy LocalSnat namespace: %s', self.name)
         super(LocalSnatNamespace, self).delete()
-
-    def create_gateway_port(self, agent_gateway_port):
-        """Create Local Snat gateway port.
-
-           Request port creation from Plugin then creates
-           Local Snat namespace and adds gateway port.
-        """
-        LOG.warning("create_gateway_port")
-        self.create()
-
-        iface_name = self.get_ext_device_name(agent_gateway_port['id'])
-        self._gateway_added(agent_gateway_port, iface_name)
-        
     
-    def _check_for_gateway_ip_change(self, new_agent_gateway_port):
 
-        def get_gateway_ips(gateway_port):
-            gw_ips = {}
-            if gateway_port:
-                for subnet in gateway_port.get('subnets', []):
-                    gateway_ip = subnet.get('gateway_ip', None)
-                    if gateway_ip:
-                        ip_version = ip_lib.get_ip_version(gateway_ip)
-                        gw_ips[ip_version] = gateway_ip
-            return gw_ips
-
-        new_gw_ips = get_gateway_ips(new_agent_gateway_port)
-        old_gw_ips = get_gateway_ips(self.agent_gateway_port)
-
-        return new_gw_ips != old_gw_ips
-
-    def update_gateway_port(self, agent_gateway_port):
-        
-        LOG.warning("update_gateway_port")
-        gateway_ip_not_changed = self.agent_gateway_port and (
-            not self._check_for_gateway_ip_change(agent_gateway_port))
-        self.agent_gateway_port = agent_gateway_port
-        if gateway_ip_not_changed:
-            return
-
-        ns_name = self.name
-        interface_name = self.get_ext_device_name(agent_gateway_port['id'])
-        for fixed_ip in agent_gateway_port['fixed_ips']:
-            ip_lib.send_ip_addr_adv_notif(ns_name,
-                                          interface_name,
-                                          fixed_ip['ip_address'],
-                                          self.agent_conf)
-
-        ipd = ip_lib.IPDevice(interface_name, namespace=ns_name)
-        for subnet in agent_gateway_port.get('subnets',[]):
-            gw_ip = subnet.get('gateway_ip')
-            if gw_ip:
-                is_gateway_not_in_subnet = not ipam_utils.check_subnet_ip(
-                                                subnet.get('cidr'), gw_ip)
-                if is_gateway_not_in_subnet:
-                    ipd.route.add_route(gw_ip, scope='link')
-                ipd.route.add_gateway(gw_ip)
 
     def _add_cidr_to_device(self, device, ip_cidr):
         if not device.addr.list(to=ip_cidr):
@@ -224,5 +160,31 @@ class LocalSnatNamespace(namespaces.Namespace):
            
         # add default route for the link local interface
         rtr_2_snat_dev.route.add_gateway(str(snat_2_rtr.ip), table=SNAT_RT_TBL)
-        #setup the NAT rules and chains
-        ri._handle_router_snat_rules(self.agent_gateway_port, rtr_2_snat_name)
+        
+        #update local arp table
+        #self._update_snat_arp_entry(snat_2_rtr_dev, 'add')
+
+    
+    def _update_snat_arp_entry(self, snat_2_rtr_dev, operation):
+        try:            
+            
+            if snat_2_rtr_dev.exists():
+                mac = snat_2_rtr_dev.address()
+                ip = '169.254.128.129'
+                if operation == 'add':
+                    snat_2_rtr_dev.neigh.add(ip, mac)
+                elif operation == 'delete':
+                    snat_2_rtr_dev.neigh.delete(ip, mac)
+                return True
+            else:
+                if operation == 'add':
+                    LOG.warning(_LW("Device %s does not exist so ARP entry "
+                                    "cannot be updated, will cache "
+                                    "information to be applied later "
+                                    "when the device exists"),
+                                snat_2_rtr_dev)
+                return False
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_LE("DVR: Failed updating LOCAL SNAT arp entry"))
+                

@@ -354,7 +354,9 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         # external_gateway port or the agent_mode.
         for subnet in port['subnets']:
             self._set_subnet_arp_info(subnet['id'])
+        LOG.warning("-------> DvrLocalRouter::internal_network_added BEFORE snat_redirect_add_from_port")
         self._snat_redirect_add_from_port(port)
+        LOG.warning("-------> DvrLocalRouter::internal_network_added AFTER snat_redirect_add_from_port")
 
     def _snat_redirect_add_from_port(self, port):
         ex_gw_port = self.get_ex_gw_port()
@@ -366,6 +368,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             return
 
         interface_name = self.get_internal_device_name(port['id'])
+        LOG.warning("-------> DvrLocalRouter::_snat_redirect_add_from_port interface: %s", interface_name)
         self._snat_redirect_add(sn_port, port, interface_name)
 
     def _dvr_internal_network_removed(self, port):
@@ -402,6 +405,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         # TODO(Carl) Refactor external_gateway_added/updated/removed to use
         # super class implementation where possible.  Looks like preserve_ips,
         # and ns_name are the key differences.
+        LOG.warning("---------> DvrLocalRouter::external_gateway_added  STARTED")
         ip_wrapr = ip_lib.IPWrapper(namespace=self.ns_name)
         ip_wrapr.netns.execute(['sysctl', '-w',
                                'net.ipv4.conf.all.send_redirects=0'])
@@ -417,12 +421,14 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                                        port['mac_address'],
                                        ip['subnet_id'],
                                        'add')
+        LOG.warning("---------> DvrLocalRouter::external_gateway_added  FINISHED")
 
     def external_gateway_updated(self, ex_gw_port, interface_name):
         pass
 
     def external_gateway_removed(self, ex_gw_port, interface_name):
         # TODO(Carl) Should this be calling process_snat_dnat_for_fip?
+        LOG.warning("---------> DvrLocalRouter::external_gateway_removed  STARTED")
         self.process_floating_ip_nat_rules()
         if self.fip_ns:
             to_fip_interface_name = (
@@ -436,6 +442,8 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 continue
             internal_interface = self.get_internal_device_name(p['id'])
             self._snat_redirect_remove(gateway, p, internal_interface)
+            
+        LOG.warning("---------> DvrLocalRouter::external_gateway_removed  FINISHED")
 
     def _handle_router_snat_rules(self, ex_gw_port, interface_name):
         """Configures NAT rules for Floating IPs for DVR."""

@@ -626,8 +626,12 @@ class RouterInfo(object):
             preserve_ips=preserve_ips,
             clean_connections=True)
 
+        LOG.warning("---> Before adding default gateway interface: %(interface_name)s, nspace: %(namespace)s, ips: %(ips)s, cidrs: %(ip_cidrs)s, %(preserve_ips)s " ,
+                    {'interface_name': interface_name, 'namespace': ns_name, 'ips':gateway_ips, 'ip_cidrs':ip_cidrs, 'preserve_ips':preserve_ips})
+        LOG.warning("---> Before adding default gateway interface: %s", ex_gw_port)
         device = ip_lib.IPDevice(interface_name, namespace=ns_name)
         for ip in gateway_ips or []:
+            LOG.warning("---> Before adding default gateway interface in loop %s" , ip)
             device.route.add_gateway(ip)
 
         if enable_ra_on_gw:

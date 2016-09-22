@@ -15,9 +15,11 @@ from oslo_log import log as logging
 from neutron._i18n import _LE
 from neutron.agent.l3 import dvr_fip_ns
 from neutron.agent.l3 import dvr_snat_ns
+from neutron.agent.l3 import dvr_local_snat_ns
 from neutron.agent.l3 import namespaces
 from neutron.agent.linux import external_process
 from neutron.agent.linux import ip_lib
+from neutron.common import constants as l3_constants
 
 LOG = logging.getLogger(__name__)
 
@@ -136,7 +138,11 @@ class NamespaceManager(object):
 
     def _cleanup(self, ns_prefix, ns_id):
         ns_class = self.ns_prefix_to_class_map[ns_prefix]
-        ns = ns_class(ns_id, self.agent_conf, self.driver, use_ipv6=False)
+        if (ns_prefix == dvr_snat_ns.SNAT_NS_PREFIX and 
+            self.agent_conf.agent_mode == l3_constants.L3_AGENT_MODE_DVR_LOCAL_SNAT):
+            ns = dvr_local_snat_ns.LocalSnatNamespace(ns_id, self.agent_conf, self.driver, use_ipv6=False)
+        else:
+            ns = ns_class(ns_id, self.agent_conf, self.driver, use_ipv6=False)
         try:
             if self.metadata_driver:
                 # cleanup stale metadata proxy processes first

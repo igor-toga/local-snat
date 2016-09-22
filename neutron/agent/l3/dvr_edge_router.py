@@ -16,6 +16,7 @@ from oslo_log import log as logging
 
 from neutron._i18n import _LE
 from neutron.agent.l3 import dvr_local_router
+from neutron.agent.l3 import dvr_edge_router_base as dvr_edge_base
 from neutron.agent.l3 import dvr_snat_ns
 from neutron.agent.l3 import router_info as router
 from neutron.agent.linux import ip_lib
@@ -25,7 +26,7 @@ from neutron.common import constants as l3_constants
 LOG = logging.getLogger(__name__)
 
 
-class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
+class DvrEdgeRouter(dvr_edge_base.DvrEdgeRouterBase):
 
     def __init__(self, agent, host, *args, **kwargs):
         super(DvrEdgeRouter, self).__init__(agent, host, *args, **kwargs)
@@ -170,6 +171,7 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
         long_name = dvr_snat_ns.SNAT_INT_DEV_PREFIX + port_id
         return long_name[:self.driver.DEV_NAME_LEN]
 
+    """
     def _is_this_snat_host(self):
         host = self.router.get('gw_port_host')
         LOG.warning("_is_this_snat_host: attribute gw_port_host: %s, self host: %s", host, self.host)
@@ -199,7 +201,8 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
 
             self._add_snat_rules(ex_gw_port, self.snat_iptables_manager,
                                  interface_name)
-
+    """
+    """
     def update_routing_table(self, operation, route):
         if self.get_ex_gw_port() and self._is_this_snat_host():
             ns_name = self.snat_namespace.name
@@ -212,12 +215,13 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
                 LOG.error(_LE("The SNAT namespace %s does not exist for "
                               "the router."), ns_name)
         super(DvrEdgeRouter, self).update_routing_table(operation, route)
-
+    
     def delete(self, agent):
         super(DvrEdgeRouter, self).delete(agent)
         if self.snat_namespace.exists():
             self.snat_namespace.delete()
 
+    
     def process_address_scope(self):
         super(DvrEdgeRouter, self).process_address_scope()
 
@@ -244,3 +248,5 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
         with self.snat_iptables_manager.defer_apply():
             self._add_address_scope_mark(
                 self.snat_iptables_manager, ports_scopemark)
+    """
+    
