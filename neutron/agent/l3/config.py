@@ -39,7 +39,7 @@ OPTS = [
                       "with DVR.  This mode must be used for an L3 agent "
                       "running on a centralized node (or in single-host "
                       "deployments, e.g. devstack), 'dvr-local-snat' enables "
-                      "local external network connectivity for specific l3 agent")),
+                      "external network connectivity for specific l3 agent")),
     cfg.PortOpt('metadata_port',
                 default=9697,
                 help=_("TCP Port used by Neutron metadata namespace proxy.")),

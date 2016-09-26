@@ -19,7 +19,8 @@ from neutron_lib import constants as lib_constants
 
 from neutron.common import _deprecate
 
-DEVICE_OWNER_ROUTER_LOCAL_GW = lib_constants.DEVICE_OWNER_NETWORK_PREFIX + "router_local_gateway"
+DEVICE_OWNER_ROUTER_LOCAL_GW = lib_constants.DEVICE_OWNER_NETWORK_PREFIX + \
+    "router_local_gateway"
 ROUTER_PORT_OWNERS = lib_constants.ROUTER_INTERFACE_OWNERS_SNAT + \
     (lib_constants.DEVICE_OWNER_ROUTER_GW, DEVICE_OWNER_ROUTER_LOCAL_GW,)
 

@@ -233,7 +233,7 @@ class FipNamespace(namespaces.Namespace):
                                           self.agent_conf)
 
         ipd = ip_lib.IPDevice(interface_name, namespace=ns_name)
-        for subnet in agent_gateway_port.get('subnets',[]):
+        for subnet in agent_gateway_port.get('subnets', []):
             gw_ip = subnet.get('gateway_ip')
             if gw_ip:
                 is_gateway_not_in_subnet = not ipam_utils.check_subnet_ip(

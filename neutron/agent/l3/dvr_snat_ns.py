@@ -35,7 +35,6 @@ class SnatNamespace(namespaces.Namespace):
 
     @namespaces.check_ns_existence
     def delete(self):
-        LOG.warning("delete -> base snat namespace")
         ns_ip = ip_lib.IPWrapper(namespace=self.name)
         for d in ns_ip.get_devices(exclude_loopback=True):
             if d.name.startswith(SNAT_INT_DEV_PREFIX):

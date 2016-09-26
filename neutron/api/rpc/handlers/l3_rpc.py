@@ -93,7 +93,8 @@ class L3RpcCallback(object):
                 self.l3plugin.list_active_sync_routers_on_active_l3_agent(
                     context, host, router_ids))
         else:
-            routers = self.l3plugin.get_sync_data(context, router_ids, active=None, host=host)
+            routers = self.l3plugin.get_sync_data(context, router_ids,
+                                                  active=None, host=host)
         if utils.is_extension_supported(
             self.plugin, constants.PORT_BINDING_EXT_ALIAS):
             self._ensure_host_set_on_ports(context, host, routers)
@@ -118,17 +119,7 @@ class L3RpcCallback(object):
                     self._ensure_host_set_on_port(
                         context, gw_port_host, p, router['id'],
                         ha_router_port=router.get('ha'))
-                    
-                # new code to bind local gateway on agent
-                ###local_gw_port = self.l3plugin.get_gateway_port_on_host(context, router['id'], host)
-                #local_gw_port = router['alt_gw_port']
-                #if local_gw_port:
-                #    
-                #    LOG.debug( "-------------Updating local gateway port %s" % local_gw_port)
-                #    self._ensure_host_set_on_port(context,
-                #                              host,
-                #                              local_gw_port,
-                #                              router['id'])
+
             else:
                 self._ensure_host_set_on_port(
                     context, host,

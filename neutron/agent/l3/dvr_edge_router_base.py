@@ -1,11 +1,20 @@
+# Copyright (c) 2015 OpenStack Foundation
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
 from oslo_log import log as logging
 
 from neutron._i18n import _LE
 from neutron.agent.l3 import dvr_local_router
-from neutron.agent.l3 import dvr_snat_ns
-from neutron.agent.l3 import router_info as router
-from neutron.agent.linux import ip_lib
-from neutron.agent.linux import iptables_manager
 from neutron.common import constants as l3_constants
 
 LOG = logging.getLogger(__name__)
@@ -18,17 +27,13 @@ class DvrEdgeRouterBase(dvr_local_router.DvrLocalRouter):
         self.snat_namespace = None
         self.snat_iptables_manager = None
 
-    
-    
     def delete(self, agent):
         super(DvrEdgeRouterBase, self).delete(agent)
         if self.snat_namespace.exists():
             self.snat_namespace.delete()
-            
 
     def _is_this_snat_host(self):
         host = self.router.get('gw_port_host')
-        LOG.warning("_is_this_snat_host: attribute gw_port_host: %s, self host: %s", host, self.host)
         if not host:
             LOG.debug("gw_port_host missing from router: %s",
                       self.router['id'])
@@ -56,9 +61,6 @@ class DvrEdgeRouterBase(dvr_local_router.DvrLocalRouter):
             self._add_snat_rules(ex_gw_port, self.snat_iptables_manager,
                                  interface_name)
 
-    
-    
-    
     def update_routing_table(self, operation, route):
         if self.get_ex_gw_port() and self._is_this_snat_host():
             ns_name = self.snat_namespace.name
@@ -71,7 +73,7 @@ class DvrEdgeRouterBase(dvr_local_router.DvrLocalRouter):
                 LOG.error(_LE("The SNAT namespace %s does not exist for "
                               "the router."), ns_name)
         super(DvrEdgeRouterBase, self).update_routing_table(operation, route)
-        
+
     def process_address_scope(self):
         super(DvrEdgeRouterBase, self).process_address_scope()
 
