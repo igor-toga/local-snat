@@ -1177,23 +1177,6 @@ class L3_NAT_with_dvr_db_mixin(l3_db.L3_NAT_db_mixin,
                 context, address_pair_port['id'], {'port': port_data})
             return update_port
 
-    def test_get_sync_data(self, context, router_ids=None,
-                           active=None, host=None):
-        routers, interfaces, floating_ips = self._get_router_info_list(
-            context, router_ids=router_ids, active=active)
-
-        # add alternative router port into dictionary
-        for router in routers:
-            self._process_alternative_gw_port(context, router, host)
-
-        ports_to_populate = [router['gw_port'] for router in routers
-                             if router.get('gw_port')] + interfaces
-        self._populate_mtu_and_subnets_for_ports(context, ports_to_populate)
-        routers_dict = dict((router['id'], router) for router in routers)
-        self._process_floating_ips(context, routers_dict, floating_ips)
-        self._process_interfaces(routers_dict, interfaces)
-        return list(routers_dict.values())
-
 
 def is_distributed_router(router):
     """Return True if router to be handled is distributed."""

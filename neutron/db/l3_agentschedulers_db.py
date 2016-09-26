@@ -395,10 +395,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
 
         if not agentschedulers_db.services_available(agent.admin_state_up):
             return []
-
-        scheduled_router_ids = self._get_router_ids_for_agent(context, agent,
-                                                              router_ids)
-        return scheduled_router_ids
+        return self._get_router_ids_for_agent(context, agent, router_ids)
 
     def _get_router_ids_for_agent(self, context, agent, router_ids):
         """Get IDs of routers that the agent should host

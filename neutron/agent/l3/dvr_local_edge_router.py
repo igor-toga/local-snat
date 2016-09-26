@@ -195,7 +195,8 @@ class DvrLocalEdgeRouter(dvr_edge_base.DvrEdgeRouterBase):
     def _create_snat_namespace(self, ex_gw_port):
         """
         Create SNAT namespace
-        Create vpair that connects SNAT and router namespaces
+        Technically we wire both local namespaces: router and SNAT
+        but vpair endpoints are not reflected in port tables of database
         """
         self.snat_namespace.create()
         self.snat_namespace.create_rtr_2_snat_link(self)
@@ -255,10 +256,10 @@ class DvrLocalEdgeRouter(dvr_edge_base.DvrEdgeRouterBase):
             return long_name[:self.driver.DEV_NAME_LEN]
 
     def _add_snat_port_devicename_scopemark(self, devicename_scopemark):
-        p = self.snat_namespace.get_r2snat_interface(self.router_id)
-        device_name = p['id']
-        ip_cidrs = common_utils.fixed_ip_cidrs(p['fixed_ips'])
-        port_as_marks = self.get_port_address_scope_mark(p)
+        snat_port = self.snat_namespace.get_r2snat_interface(self.router_id)
+        device_name = snat_port['id']
+        ip_cidrs = common_utils.fixed_ip_cidrs(snat_port['fixed_ips'])
+        port_as_marks = self.get_port_address_scope_mark(snat_port)
         for ip_version in {ip_lib.get_ip_version(cidr)
                            for cidr in ip_cidrs}:
             devicename_scopemark[ip_version][device_name] = (
@@ -272,7 +273,8 @@ class DvrLocalEdgeRouter(dvr_edge_base.DvrEdgeRouterBase):
         ports_scopemark = self._get_port_devicename_scopemark(
             internal_ports, self.get_internal_device_name)
 
-        # add internal SNAT device scope mark
+        # Unlike base version we need internal router side of vpair
+        # to be added to scope mark list
         if self.snat_namespace.exists():
             ports_scopemark = self._add_snat_port_devicename_scopemark(
                 ports_scopemark)

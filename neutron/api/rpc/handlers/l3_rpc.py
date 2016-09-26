@@ -94,7 +94,7 @@ class L3RpcCallback(object):
                     context, host, router_ids))
         else:
             routers = self.l3plugin.get_sync_data(context, router_ids,
-                                                  active=None, host=host)
+                                                  host=host)
         if utils.is_extension_supported(
             self.plugin, constants.PORT_BINDING_EXT_ALIAS):
             self._ensure_host_set_on_ports(context, host, routers)
@@ -119,7 +119,6 @@ class L3RpcCallback(object):
                     self._ensure_host_set_on_port(
                         context, gw_port_host, p, router['id'],
                         ha_router_port=router.get('ha'))
-
             else:
                 self._ensure_host_set_on_port(
                     context, host,
@@ -159,7 +158,6 @@ class L3RpcCallback(object):
                         {'port': {portbindings.HOST_ID: host}})
                     # updating port's host to pass actual info to l3 agent
                     port[portbindings.HOST_ID] = host
-                    LOG.debug("-------------- Port %s is updated" % port['id'])
                 except exceptions.PortNotFound:
                     LOG.debug("Port %(port)s not found while updating "
                               "agent binding for router %(router)s.",

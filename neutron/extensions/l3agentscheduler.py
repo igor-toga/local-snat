@@ -175,7 +175,7 @@ class RouterL3AgentMismatch(exceptions.Conflict):
 
 class DVRL3CannotAssignToDvrAgent(exceptions.Conflict):
     message = _("Not allowed to manually assign a router to an "
-                "agent in 'dvr' or 'dvr_local_snat' mode.")
+                "agent in ['dvr' , 'dvr_local_snat'] mode.")
 
 
 class DVRL3CannotRemoveFromDvrAgent(exceptions.Conflict):
