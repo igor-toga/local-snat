@@ -655,7 +655,10 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
     def get_router(self, context, id, fields=None):
         router = self._get_router(context, id)
-        return self._make_router_dict(router, fields)
+        #Fix for local SNAT feature
+        res = self._make_router_dict(router, fields)
+        self._add_agent_gw_info(context, res, router)
+        return res
 
     def get_routers(self, context, filters=None, fields=None,
                     sorts=None, limit=None, marker=None,

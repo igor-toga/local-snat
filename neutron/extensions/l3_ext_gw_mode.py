@@ -39,7 +39,15 @@ EXTENDED_ATTRIBUTES_2_0 = {
                        'default': None,
                        'required': False}
                    }
-                  }}}}
+                  }},
+                'agents_gw_info':
+                {'allow_post': False,
+                 'allow_put': False,
+                 'is_visible': True,
+                 'default': None,
+                 'enforce_policy': False
+                 }
+                }}
 
 
 class L3_ext_gw_mode(extensions.ExtensionDescriptor):
