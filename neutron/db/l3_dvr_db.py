@@ -143,6 +143,7 @@ class L3_NAT_with_dvr_db_mixin(l3_db.L3_NAT_db_mixin,
     def remove_gateway_interface(self, context, router_id, router):
         r = router['router']
         gw_info = r.pop(l3.EXTERNAL_GW_INFO, attributes.ATTR_NOT_SPECIFIED)
+        router_db = self._get_router(context, router_id)
 
         if gw_info != attributes.ATTR_NOT_SPECIFIED:
             agent_id = gw_info.get('agent_id')
@@ -162,7 +163,6 @@ class L3_NAT_with_dvr_db_mixin(l3_db.L3_NAT_db_mixin,
 
                 LOG.debug("Deleting local gateway port from L3 agent on "
                           "host %s" % agent_db.host)
-                router_db = self._get_router(context, router_id)
                 self._delete_current_gw_port(context, router_id, router_db,
                                              None, local_gw_port)
 
