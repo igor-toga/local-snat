@@ -196,7 +196,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         curr_port_id = None
         curr_network_id = None
         curr_host = None
-        alt_gateway_ip = None
+        curr_gateway_ip = None
 
         for port_id, host, alt_gateway_ip, ip, subnet_id, network_id \
             in routerport_qry:
@@ -206,6 +206,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 curr_port_id = port_id
                 curr_network_id = network_id
                 curr_host = host
+                curr_gateway_ip = alt_gateway_ip
 
             elif curr_port_id == port_id:
                 fixed_ips_list.append([{'subnet_id': subnet_id,
@@ -215,7 +216,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 ext_gw_info = {
                     'network_id': curr_network_id,
                     'host': curr_host,
-                    'alt_gateway_ip': alt_gateway_ip,
+                    'alt_gateway_ip': curr_gateway_ip,
                     'external_fixed_ips': fixed_ips_list
                 }
                 agents_gw_info.append(ext_gw_info)
@@ -224,12 +225,13 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 curr_port_id = port_id
                 curr_network_id = network_id
                 curr_host = host
+                curr_gateway_ip = alt_gateway_ip
 
         if curr_port_id:
             ext_gw_info = {
                     'network_id': curr_network_id,
                     'host': curr_host,
-                    'alt_gateway_ip': alt_gateway_ip,
+                    'alt_gateway_ip': curr_gateway_ip,
                     'external_fixed_ips': fixed_ips_list}
             agents_gw_info.append(ext_gw_info)
 
